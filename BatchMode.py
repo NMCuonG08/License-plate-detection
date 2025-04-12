@@ -9,22 +9,61 @@ from PIL import Image # Thêm thư viện Pillow
 
 # Helper function to convert Pillow Image to QPixmap
 def pil_to_qpixmap(pil_image):
-    """Converts a Pillow Image object to a QPixmap."""
+    """Converts a Pillow Image object to a QPixmap, including debug info."""
     try:
-        # Convert RGBA or P mode images with transparency to RGBA
-        if pil_image.mode == "RGBA" or (pil_image.mode == "P" and 'transparency' in pil_image.info):
-             img_byte_arr = pil_image.copy().convert("RGBA").tobytes("raw", "RGBA")
-             qimage = QImage(img_byte_arr, pil_image.size[0], pil_image.size[1], QImage.Format_RGBA8888)
-        # Convert other modes to RGB first
-        else:
-             img_byte_arr = pil_image.copy().convert("RGB").tobytes("raw", "RGB")
-             qimage = QImage(img_byte_arr, pil_image.size[0], pil_image.size[1], QImage.Format_RGB888)
+        print(f"[DEBUG pil_to_qpixmap] Original PIL Mode: {pil_image.mode}, Size: {pil_image.size}") # Debug info
 
-        return QPixmap.fromImage(qimage)
+        # Xử lý các mode phổ biến
+        if pil_image.mode == "RGB":
+            print("[DEBUG pil_to_qpixmap] Mode is RGB. Converting directly.") # Debug info
+            img_byte_arr = pil_image.tobytes("raw", "RGB")
+            bytes_per_line = pil_image.size[0] * 3
+            qimage = QImage(img_byte_arr, pil_image.size[0], pil_image.size[1], bytes_per_line, QImage.Format_RGB888)
+        elif pil_image.mode == "RGBA":
+            print("[DEBUG pil_to_qpixmap] Mode is RGBA. Converting directly.") # Debug info
+            img_byte_arr = pil_image.tobytes("raw", "RGBA")
+            bytes_per_line = pil_image.size[0] * 4
+            qimage = QImage(img_byte_arr, pil_image.size[0], pil_image.size[1], bytes_per_line, QImage.Format_RGBA8888)
+        elif pil_image.mode == "L": # Grayscale
+            print("[DEBUG pil_to_qpixmap] Mode is L (Grayscale). Converting to RGB.") # Debug info
+            # Chuyển Grayscale sang RGB để hiển thị màu đúng (mặc dù vẫn là xám)
+            rgb_image = pil_image.convert("RGB")
+            img_byte_arr = rgb_image.tobytes("raw", "RGB")
+            bytes_per_line = rgb_image.size[0] * 3
+            qimage = QImage(img_byte_arr, rgb_image.size[0], rgb_image.size[1], bytes_per_line, QImage.Format_RGB888)
+        elif pil_image.mode == "P": # Palette
+             print("[DEBUG pil_to_qpixmap] Mode is P (Palette). Converting to RGBA (handling transparency).") # Debug info
+             rgba_image = pil_image.convert("RGBA") # Chuyển Palette sang RGBA để đảm bảo màu và transparency
+             img_byte_arr = rgba_image.tobytes("raw", "RGBA")
+             bytes_per_line = rgba_image.size[0] * 4
+             qimage = QImage(img_byte_arr, rgba_image.size[0], rgba_image.size[1], bytes_per_line, QImage.Format_RGBA8888)
+        else: # Các trường hợp khác (CMYK, YCbCr,...) cố gắng chuyển về RGB
+            print(f"[DEBUG pil_to_qpixmap] Mode is {pil_image.mode}. Attempting conversion to RGB.") # Debug info
+            try:
+                 rgb_image = pil_image.convert("RGB")
+                 img_byte_arr = rgb_image.tobytes("raw", "RGB")
+                 bytes_per_line = rgb_image.size[0] * 3
+                 qimage = QImage(img_byte_arr, rgb_image.size[0], rgb_image.size[1], bytes_per_line, QImage.Format_RGB888)
+            except Exception as convert_err:
+                 print(f"[ERROR pil_to_qpixmap] Could not convert mode {pil_image.mode} to RGB: {convert_err}")
+                 return QPixmap() # Trả về pixmap rỗng nếu không chuyển được
+
+        print(f"[DEBUG pil_to_qpixmap] Created QImage - Format: {qimage.format()}, Size: {qimage.size()}, isNull: {qimage.isNull()}") # Debug info
+
+        if qimage.isNull():
+            print("[ERROR pil_to_qpixmap] Failed to create QImage.")
+            return QPixmap()
+
+        # Tạo QPixmap từ QImage
+        pixmap = QPixmap.fromImage(qimage)
+        print(f"[DEBUG pil_to_qpixmap] Created QPixmap - Size: {pixmap.size()}, isNull: {pixmap.isNull()}") # Debug info
+        return pixmap
+
     except Exception as e:
-        print(f"Error converting PIL to QPixmap: {e}")
-        return QPixmap() # Return empty pixmap on error
-
+        print(f"[ERROR pil_to_qpixmap] General error during conversion: {e}")
+        import traceback
+        traceback.print_exc() # In chi tiết lỗi hơn
+        return QPixmap()
 
 class BatchModeAppRedesigned(QMainWindow):
     def __init__(self):
@@ -258,24 +297,38 @@ class BatchModeAppRedesigned(QMainWindow):
 
             if full_path and os.path.exists(full_path):
                 try:
-                    # Dùng Pillow để mở ảnh, an toàn hơn cho nhiều định dạng
+                    print(f"\n[DEBUG display_selected_image] Loading: {full_path}") # Debug
                     with Image.open(full_path) as img:
-                        pixmap = pil_to_qpixmap(img) # Chuyển PIL Image sang QPixmap
+                        # <<<--- Gọi hàm pil_to_qpixmap đã sửa đổi --->>>
+                        pixmap = pil_to_qpixmap(img)
+
                         if not pixmap.isNull():
-                             scaled_pixmap = pixmap.scaled(self.current_image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                             print(f"[DEBUG display_selected_image] Original Pixmap size: {pixmap.size()}") # Debug
+                             print(f"[DEBUG display_selected_image] Target Label size: {self.current_image_label.size()}") # Debug
+
+                             # Thực hiện scale ảnh để vừa với QLabel
+                             scaled_pixmap = pixmap.scaled(self.current_image_label.size(),
+                                                          Qt.KeepAspectRatio, # Giữ tỷ lệ
+                                                          Qt.SmoothTransformation) # Scale mượt
+
+                             print(f"[DEBUG display_selected_image] Scaled Pixmap size: {scaled_pixmap.size()}") # Debug
                              self.current_image_label.setPixmap(scaled_pixmap)
                              self.status_label.setText(f"Xem trước: {file_name}")
                         else:
-                             raise ValueError("Conversion to QPixmap failed.")
+                             # Lỗi xảy ra trong pil_to_qpixmap (đã in lỗi ở đó)
+                             self.current_image_label.setText(f"Lỗi chuyển đổi ảnh:\n{file_name}")
+                             self.status_label.setText(f"Lỗi xem trước: {file_name}")
                 except Exception as e:
-                    print(f"Error loading image {file_name} with Pillow: {e}")
-                    self.current_image_label.setText(f"Lỗi khi tải ảnh:\n{file_name}\n({e})")
-                    self.status_label.setText(f"Lỗi khi xem trước: {file_name}")
+                    print(f"[ERROR display_selected_image] Error opening/processing image {file_name}: {e}") # Debug
+                    self.current_image_label.setText(f"Lỗi khi mở ảnh:\n{file_name}\n({e})")
+                    self.status_label.setText(f"Lỗi xem trước: {file_name}")
             else:
                 self.current_image_label.setText(f"Không tìm thấy file:\n{file_name}")
                 self.status_label.setText(f"Lỗi không tìm thấy file: {file_name}")
         else:
-             self.current_image_label.setText("Chọn một file để xem trước")
+             # Xóa ảnh xem trước nếu không có item nào được chọn
+             self.current_image_label.clear() # Xóa pixmap cũ
+             self.current_image_label.setText("Chọn một file để xem trước") # Đặt lại text placeholder
 
     def _prepare_processing(self, operation_name):
         """Hàm trợ giúp kiểm tra điều kiện và chuẩn bị trước khi xử lý."""

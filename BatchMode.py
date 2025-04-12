@@ -162,6 +162,7 @@ QPushButton {
     border-radius: 3px;
 }
 """)
+        output_button.clicked.connect(self.select_output_directory)
 
         output_layout.addWidget(self.output_path, 1)
         output_layout.addWidget(output_button)
@@ -247,10 +248,13 @@ QGroupBox::title {
 """)
 
     def add_files(self):
-        self.file_list.addItem("example_image1.jpg")
-        self.file_list.addItem("example_image2.png")
-        self.file_list.addItem("example_image3.jpg")
-        self.status_label.setText("Đã thêm 3 file (chế độ giả lập)")
+        files, _ = QFileDialog.getOpenFileNames(self, "Chọn file", "", "Images (*.jpg *.png *.gif *.bmp);;All Files (*)")
+        if files:
+            for file in files:
+                self.file_list.addItem(file)
+            self.status_label.setText(f"Đã thêm {len(files)} file")
+        else:
+            self.status_label.setText("Không có file nào được chọn")
 
     def clear_files(self):
         self.file_list.clear()
@@ -282,6 +286,12 @@ QGroupBox::title {
             self.processing = False
             self.process_button.setText("Bắt đầu xử lý")
             self.status_label.setText("Xử lý hoàn tất!")
+
+    def select_output_directory(self):
+        directory = QFileDialog.getExistingDirectory(self, "Chọn thư mục đầu ra")
+        if directory:
+            self.output_path.setText(directory)
+            self.status_label.setText(f"Đã chọn thư mục đầu ra: {directory}")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:

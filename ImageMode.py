@@ -1,13 +1,16 @@
 import sys
+import cv2
+import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QWidget, QLabel, QPushButton,
-                             QHBoxLayout, QFileDialog, QSlider, QComboBox, QToolBar, QAction)
+                             QHBoxLayout, QFileDialog, QSlider, QComboBox)
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont, QIcon, QPixmap
-
+from PyQt5.QtGui import QFont, QPixmap, QImage
 
 class ImageModeApp(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.image = None  # ảnh gốc
+        self.current_image = None  # ảnh hiển thị
         self.initUI()
 
     def initUI(self):
@@ -15,47 +18,21 @@ class ImageModeApp(QMainWindow):
         self.setWindowFlag(Qt.FramelessWindowHint)
         self.showFullScreen()
 
-        # Widget chính
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
 
-        # Header với nút quay lại và nút đóng
         header_layout = QHBoxLayout()
-
         back_button = QPushButton("← Quay lại")
         back_button.setFont(QFont('Segoe UI', 12))
-        back_button.setStyleSheet("""
-QPushButton {
-    background-color: #3498db;
-    color: white;
-    border: none;
-    padding: 10px 20px;
-    border-radius: 5px;
-}
-QPushButton:hover {
-    background-color: #2980b9;
-}
-""")
         back_button.clicked.connect(self.close)
 
         title = QLabel('Image Editor')
         title.setAlignment(Qt.AlignCenter)
         title.setFont(QFont('Segoe UI Light', 28))
-        title.setStyleSheet('color: #3498db;')
 
         close_button = QPushButton("X")
         close_button.setFont(QFont('Segoe UI', 12, QFont.Bold))
         close_button.setFixedSize(40, 40)
-        close_button.setStyleSheet("""
-QPushButton {
-    background-color: #e74c3c;
-    color: white;
-    border-radius: 20px;
-}
-QPushButton:hover {
-    background-color: #c0392b;
-}
-""")
         close_button.clicked.connect(self.close)
 
         header_layout.addWidget(back_button)
@@ -64,103 +41,131 @@ QPushButton:hover {
         header_layout.addStretch()
         header_layout.addWidget(close_button)
 
-        # Toolbar cho các chức năng chỉnh sửa
         toolbar_layout = QHBoxLayout()
-
-        # Nút mở file
         open_button = QPushButton("Mở ảnh")
-        open_button.setStyleSheet("""
-QPushButton {
-    background-color: #3498db;
-    color: white;
-    padding: 8px 15px;
-    border-radius: 4px;
-}
-""")
         open_button.clicked.connect(self.open_image)
 
-        # Nút lưu
         save_button = QPushButton("Lưu ảnh")
-        save_button.setStyleSheet("""
-QPushButton {
-    background-color: #2ecc71;
-    color: white;
-    padding: 8px 15px;
-    border-radius: 4px;
-}
-""")
+        save_button.clicked.connect(self.save_image)
 
-        # Bộ lọc
         filter_label = QLabel("Bộ lọc:")
-        filter_combo = QComboBox()
-        filter_combo.addItems(["Bình thường", "Đen trắng", "Mờ", "Độ sáng"])
-        filter_combo.setStyleSheet("""
-QComboBox {
-    padding: 6px;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-}
-""")
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["Bình thường", "Đen trắng", "Mờ", "Độ sáng"])
+        self.filter_combo.currentTextChanged.connect(self.apply_filter)
 
-        # Độ sáng
         brightness_label = QLabel("Độ sáng:")
-        brightness_slider = QSlider(Qt.Horizontal)
-        brightness_slider.setRange(0, 100)
-        brightness_slider.setValue(50)
-        brightness_slider.setFixedWidth(150)
+        self.brightness_slider = QSlider(Qt.Horizontal)
+        self.brightness_slider.setRange(0, 100)
+        self.brightness_slider.setValue(50)
+        self.brightness_slider.valueChanged.connect(self.adjust_brightness)
 
-        # Thêm vào toolbar
+        detect_vehicle_button = QPushButton("Phát hiện phương tiện")
+        detect_vehicle_button.clicked.connect(self.detect_vehicle)
+
+        detect_sign_button = QPushButton("Phát hiện biển báo")
+        detect_sign_button.clicked.connect(self.detect_traffic_sign)
+
         toolbar_layout.addWidget(open_button)
         toolbar_layout.addWidget(save_button)
-        toolbar_layout.addSpacing(20)
         toolbar_layout.addWidget(filter_label)
-        toolbar_layout.addWidget(filter_combo)
-        toolbar_layout.addSpacing(20)
+        toolbar_layout.addWidget(self.filter_combo)
         toolbar_layout.addWidget(brightness_label)
-        toolbar_layout.addWidget(brightness_slider)
+        toolbar_layout.addWidget(self.brightness_slider)
+        toolbar_layout.addWidget(detect_vehicle_button)
+        toolbar_layout.addWidget(detect_sign_button)
         toolbar_layout.addStretch()
 
-        # Khu vực hiển thị ảnh
-        self.image_label = QLabel("Chưa có ảnh nào được mở. Nhấn 'Mở ảnh' để bắt đầu.")
+        self.image_label = QLabel("Chưa có ảnh nào được mở.")
         self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setStyleSheet("""
-QLabel {
-    background-color: #f5f5f5;
-    border: 2px dashed #ccc;
-    border-radius: 10px;
-    padding: 20px;
-    font-size: 16px;
-    color: #777;
-}
-""")
+        self.image_label.setStyleSheet("background-color: #f5f5f5; border: 2px dashed #ccc; border-radius: 10px; padding: 20px;")
 
-        # Thêm các thành phần vào layout chính
         main_layout.addLayout(header_layout)
         main_layout.addLayout(toolbar_layout)
         main_layout.addWidget(self.image_label, 1)
 
-        # Status bar
         status_bar = QLabel("Sẵn sàng")
         status_bar.setStyleSheet("padding: 5px; color: #666; border-top: 1px solid #ddd;")
         main_layout.addWidget(status_bar)
 
-        # Thêm widget chính vào cửa sổ
         self.setCentralWidget(central_widget)
-
-        # Thiết lập style chung
-        self.setStyleSheet("""
-QMainWindow, QWidget {
-    background-color: white;
-}
-""")
+        self.setStyleSheet("QMainWindow, QWidget { background-color: white; }")
 
     def open_image(self):
-        self.image_label.setText("Đã mở file ảnh (chế độ giả lập)")
+        file_name, _ = QFileDialog.getOpenFileName(self, "Chọn ảnh", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        if file_name:
+            self.image = cv2.imread(file_name)
+            self.current_image = self.image.copy()
+            self.show_image(self.current_image)
+
+    def save_image(self):
+        if self.current_image is not None:
+            path, _ = QFileDialog.getSaveFileName(self, "Lưu ảnh", "", "Images (*.png *.jpg *.bmp)")
+            if path:
+                cv2.imwrite(path, self.current_image)
+    
+    def show_image(self, img):
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        bytes_per_line = ch * w
+        qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimg).scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.image_label.setPixmap(pixmap)
+
+    def apply_filter(self):
+        if self.image is None:
+            return
+        option = self.filter_combo.currentText()
+        img = self.image.copy()
+        if option == "Đen trắng":
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        elif option == "Mờ":
+            img = cv2.GaussianBlur(img, (15, 15), 0)
+        elif option == "Độ sáng":
+            self.adjust_brightness()
+            return
+        self.current_image = img
+        self.show_image(self.current_image)
+
+    def adjust_brightness(self):
+        if self.image is None:
+            return
+        alpha = self.brightness_slider.value() / 50
+        bright = cv2.convertScaleAbs(self.image, alpha=alpha, beta=0)
+        self.current_image = bright
+        self.show_image(bright)
+
+    def detect_vehicle(self):
+        if self.image is None:
+            return
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_car.xml')
+        gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
+        vehicles = cascade.detectMultiScale(gray, 1.1, 2)
+        detected = self.image.copy()
+        for (x, y, w, h) in vehicles:
+            cv2.rectangle(detected, (x, y), (x + w, y + h), (0, 255, 0), 3)
+        self.current_image = detected
+        self.show_image(detected)
+
+    def detect_traffic_sign(self):
+        if self.image is None:
+            return
+        # Giả lập detection bằng cách vẽ 1 hình tròn (có thể thay bằng YOLO / custom model).
+        detected = self.image.copy()
+        gray = cv2.cvtColor(detected, cv2.COLOR_BGR2GRAY)
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1.2, 100,
+                                   param1=50, param2=30, minRadius=10, maxRadius=100)
+        if circles is not None:
+            circles = np.uint16(np.around(circles))
+            for i in circles[0, :]:
+                cv2.circle(detected, (i[0], i[1]), i[2], (0, 0, 255), 4)
+                cv2.rectangle(detected, (i[0]-5, i[1]-5), (i[0]+5, i[1]+5), (0, 128, 255), -1)
+        self.current_image = detected
+        self.show_image(detected)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             self.close()
-
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

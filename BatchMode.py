@@ -286,6 +286,7 @@ class BatchModeAppRedesigned(QMainWindow):
         self.width_spin = QSpinBox()
         self.width_spin.setRange(1, 10000); self.width_spin.setValue(800); self.width_spin.setSuffix(" px"); self.width_spin.setMinimumWidth(80)
         self.height_spin = QSpinBox()
+
         self.height_spin.setRange(1, 10000); self.height_spin.setValue(600); self.height_spin.setSuffix(" px"); self.height_spin.setMinimumWidth(80)
         resize_layout.addRow("Chiều rộng:", self.width_spin)
         resize_layout.addRow("Chiều cao:", self.height_spin)
@@ -345,6 +346,95 @@ class BatchModeAppRedesigned(QMainWindow):
         # --- Status Bar (Như cũ) ---
         self.status_label = QLabel("Đang tải models...")
         self.status_label.setStyleSheet("padding: 5px; color: #e67e22; border-top: 1px solid #ddd;")
+
+        self.height_spin.setRange(1, 5000)
+        self.height_spin.setValue(600)
+
+        settings_layout.addRow("Hành động:", self.action_combo)
+        settings_layout.addRow("Định dạng đầu ra:", self.format_combo)
+        settings_layout.addRow("Chiều rộng:", self.width_spin)
+        settings_layout.addRow("Chiều cao:", self.height_spin)
+
+        settings_group.setLayout(settings_layout)
+
+        # Thư mục đầu ra
+        output_group = QGroupBox("Thư mục đầu ra")
+        output_layout = QHBoxLayout()
+
+        self.output_path = QLabel("Chưa chọn")
+        self.output_path.setStyleSheet("background: white; padding: 5px; border: 1px solid #ccc; border-radius: 3px;")
+
+        output_button = QPushButton("Chọn")
+        output_button.setFixedWidth(80)
+        output_button.setStyleSheet("""
+QPushButton {
+    background-color: #3498db;
+    color: white;
+    border-radius: 3px;
+}
+""")
+        output_button.clicked.connect(self.select_output_directory)
+
+        output_layout.addWidget(self.output_path, 1)
+        output_layout.addWidget(output_button)
+        output_group.setLayout(output_layout)
+
+        # Nút xử lý và thanh tiến trình
+        process_layout = QVBoxLayout()
+
+        self.process_button = QPushButton("Bắt đầu xử lý")
+        self.process_button.setFixedHeight(40)
+        self.process_button.setStyleSheet("""
+QPushButton {
+    background-color: #2ecc71;
+    color: white;
+    border-radius: 5px;
+    font-size: 16px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #27ae60;
+}
+""")
+        self.process_button.clicked.connect(self.toggle_process)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setStyleSheet("""
+QProgressBar {
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    text-align: center;
+}
+QProgressBar::chunk {
+    background-color: #2ecc71;
+    width: 10px;
+    margin: 0.5px;
+}
+""")
+
+        process_layout.addWidget(self.process_button)
+        process_layout.addWidget(self.progress_bar)
+
+        # Thêm các phần vào panel
+        left_panel.addWidget(file_group)
+
+        right_panel.addWidget(settings_group)
+        right_panel.addWidget(output_group)
+        right_panel.addLayout(process_layout)
+
+        # Thêm vào layout nội dung
+        content_layout.addLayout(left_panel, 1)
+        content_layout.addLayout(right_panel, 1)
+
+        # Thêm các thành phần vào layout chính
+        main_layout.addLayout(header_layout)
+        main_layout.addLayout(content_layout, 1)
+
+        # Status bar
+        self.status_label = QLabel("Sẵn sàng")
+        self.status_label.setStyleSheet("padding: 5px; color: #666; border-top: 1px solid #ddd;")
+
         main_layout.addWidget(self.status_label)
 
         # --- Kết nối tín hiệu và Style chung (Như cũ) ---
@@ -368,6 +458,7 @@ class BatchModeAppRedesigned(QMainWindow):
     #      add_result_item, clear_results, keyPressEvent, resizeEvent, closeEvent)
     #      GIỮ NGUYÊN NHƯ CODE TRƯỚC ĐÓ ---
     def add_files(self):
+
         # (Code đã có)
         image_filter = "Ảnh (*.jpg *.jpeg *.png *.bmp *.gif *.tiff);;Tất cả file (*)"
         files, _ = QFileDialog.getOpenFileNames(self, "Chọn file ảnh", "", image_filter)
@@ -399,6 +490,30 @@ class BatchModeAppRedesigned(QMainWindow):
             if self.models_loaded: self.status_label.setText(f"Đã chọn thư mục lưu: {directory}")
             else: self.status_label.setText(f"Đã chọn thư mục lưu: {directory} (Models đang tải...)")
             self.update_button_states()
+
+        files, _ = QFileDialog.getOpenFileNames(self, "Chọn file", "", "Images (*.jpg *.png *.gif *.bmp);;All Files (*)")
+        if files:
+            for file in files:
+                self.file_list.addItem(file)
+            self.status_label.setText(f"Đã thêm {len(files)} file")
+        else:
+            self.status_label.setText("Không có file nào được chọn")
+
+    def clear_files(self):
+        self.file_list.clear()
+        self.status_label.setText("Đã xóa tất cả file")
+
+    def toggle_process(self):
+        if not self.processing:
+            self.processing = True
+            self.process_button.setText("Đang xử lý...")
+            self.progress_bar.setValue(0)
+
+            # Giả lập tiến trình xử lý
+            self.timer = QTimer()
+            self.timer.timeout.connect(self.update_progress)
+            self.timer.start(100)
+
         else:
             if self.models_loaded: self.status_label.setText("Chưa chọn thư mục lưu.")
             else: self.status_label.setText("Chưa chọn thư mục lưu. (Models đang tải...)")
@@ -604,6 +719,12 @@ class BatchModeAppRedesigned(QMainWindow):
         placeholder_result = QLabel("Kết quả xử lý sẽ hiển thị ở đây"); placeholder_result.setAlignment(Qt.AlignCenter); placeholder_result.setStyleSheet("color: #7f8c8d; font-size: 10pt; padding: 20px; background-color: transparent; border: none;")
         self.results_layout.addWidget(placeholder_result)
 
+    def select_output_directory(self):
+        directory = QFileDialog.getExistingDirectory(self, "Chọn thư mục đầu ra")
+        if directory:
+            self.output_path.setText(directory)
+            self.status_label.setText(f"Đã chọn thư mục đầu ra: {directory}")
+
     def keyPressEvent(self, event):
         # (Code đã có) - Có thể thêm chức năng cho nút ESC nếu muốn
         if event.key() == Qt.Key_Escape:
@@ -659,6 +780,11 @@ if __name__ == '__main__':
 
 
     app = QApplication(sys.argv)
+
     window = BatchModeAppRedesigned()
     # window.show() # Không cần gọi show() nữa vì đã có showFullScreen() trong initUI
     sys.exit(app.exec_())
+
+    window = BatchModeApp()
+    sys.exit(app.exec_())
+

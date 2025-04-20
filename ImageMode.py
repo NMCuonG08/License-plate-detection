@@ -1,20 +1,27 @@
 import sys
 import cv2
 import numpy as np
+import pytesseract
+from ultralytics import YOLO
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QWidget, QLabel, QPushButton,
                              QHBoxLayout, QFileDialog, QSlider, QComboBox)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QPixmap, QImage
 
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+
 class ImageModeApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.image = None  # ảnh gốc
-        self.current_image = None  # ảnh hiển thị
+        self.image = None
+        self.current_image = None
+        self.vehicle_model = YOLO('imgmodels/yolov8n.pt')  # Pre-trained YOLOv8n model
+        self.plate_model = YOLO('imgmodels/best.pt')  # Updated to HuggingFace model
         self.initUI()
 
     def initUI(self):
-        self.setWindowTitle('Image Editor')
+        self.setWindowTitle('Image Editor with Detection')
         self.setWindowFlag(Qt.FramelessWindowHint)
         self.showFullScreen()
 
@@ -60,10 +67,7 @@ class ImageModeApp(QMainWindow):
         self.brightness_slider.valueChanged.connect(self.adjust_brightness)
 
         detect_vehicle_button = QPushButton("Phát hiện phương tiện")
-        detect_vehicle_button.clicked.connect(self.detect_vehicle)
-
-        detect_sign_button = QPushButton("Phát hiện biển báo")
-        detect_sign_button.clicked.connect(self.detect_traffic_sign)
+        detect_vehicle_button.clicked.connect(self.detect_vehicle_with_plate)
 
         toolbar_layout.addWidget(open_button)
         toolbar_layout.addWidget(save_button)
@@ -72,19 +76,18 @@ class ImageModeApp(QMainWindow):
         toolbar_layout.addWidget(brightness_label)
         toolbar_layout.addWidget(self.brightness_slider)
         toolbar_layout.addWidget(detect_vehicle_button)
-        toolbar_layout.addWidget(detect_sign_button)
         toolbar_layout.addStretch()
 
         self.image_label = QLabel("Chưa có ảnh nào được mở.")
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet("background-color: #f5f5f5; border: 2px dashed #ccc; border-radius: 10px; padding: 20px;")
 
+        status_bar = QLabel("Sẵn sàng")
+        status_bar.setStyleSheet("padding: 5px; color: #666; border-top: 1px solid #ddd;")
+
         main_layout.addLayout(header_layout)
         main_layout.addLayout(toolbar_layout)
         main_layout.addWidget(self.image_label, 1)
-
-        status_bar = QLabel("Sẵn sàng")
-        status_bar.setStyleSheet("padding: 5px; color: #666; border-top: 1px solid #ddd;")
         main_layout.addWidget(status_bar)
 
         self.setCentralWidget(central_widget)
@@ -102,7 +105,7 @@ class ImageModeApp(QMainWindow):
             path, _ = QFileDialog.getSaveFileName(self, "Lưu ảnh", "", "Images (*.png *.jpg *.bmp)")
             if path:
                 cv2.imwrite(path, self.current_image)
-    
+
     def show_image(self, img):
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
@@ -116,6 +119,7 @@ class ImageModeApp(QMainWindow):
             return
         option = self.filter_combo.currentText()
         img = self.image.copy()
+
         if option == "Đen trắng":
             img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -124,6 +128,7 @@ class ImageModeApp(QMainWindow):
         elif option == "Độ sáng":
             self.adjust_brightness()
             return
+
         self.current_image = img
         self.show_image(self.current_image)
 
@@ -135,31 +140,41 @@ class ImageModeApp(QMainWindow):
         self.current_image = bright
         self.show_image(bright)
 
-    def detect_vehicle(self):
+    def detect_vehicle_with_plate(self):
         if self.image is None:
             return
-        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_car.xml')
-        gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
-        vehicles = cascade.detectMultiScale(gray, 1.1, 2)
         detected = self.image.copy()
-        for (x, y, w, h) in vehicles:
-            cv2.rectangle(detected, (x, y), (x + w, y + h), (0, 255, 0), 3)
-        self.current_image = detected
-        self.show_image(detected)
 
-    def detect_traffic_sign(self):
-        if self.image is None:
-            return
-        # Giả lập detection bằng cách vẽ 1 hình tròn (có thể thay bằng YOLO / custom model).
-        detected = self.image.copy()
-        gray = cv2.cvtColor(detected, cv2.COLOR_BGR2GRAY)
-        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1.2, 100,
-                                   param1=50, param2=30, minRadius=10, maxRadius=100)
-        if circles is not None:
-            circles = np.uint16(np.around(circles))
-            for i in circles[0, :]:
-                cv2.circle(detected, (i[0], i[1]), i[2], (0, 0, 255), 4)
-                cv2.rectangle(detected, (i[0]-5, i[1]-5), (i[0]+5, i[1]+5), (0, 128, 255), -1)
+        vehicle_results = self.vehicle_model.predict(self.image, conf=0.3)
+        for result in vehicle_results:
+            for box in result.boxes.xyxy:
+                x1, y1, x2, y2 = map(int, box[:4])
+                cv2.rectangle(detected, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(detected, 'Vehicle', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                cropped_vehicle = self.image[y1:y2, x1:x2]
+                plate_results = self.plate_model.predict(cropped_vehicle, conf=0.3)
+
+                for p_result in plate_results:
+                    for p_box in p_result.boxes.xyxy:
+                        px1, py1, px2, py2 = map(int, p_box[:4])
+                        real_px1 = x1 + px1
+                        real_py1 = y1 + py1
+                        real_px2 = x1 + px2
+                        real_py2 = y1 + py2
+                        cv2.rectangle(detected, (real_px1, real_py1), (real_px2, real_py2), (255, 0, 0), 2)
+
+                        # Crop the detected plate region for OCR
+                        plate_image = self.image[real_py1:real_py2, real_px1:real_px2]
+
+                        # Convert the cropped plate to grayscale and apply OCR
+                        gray_plate = cv2.cvtColor(plate_image, cv2.COLOR_BGR2GRAY)
+                        plate_text = pytesseract.image_to_string(gray_plate, config='--psm 8')  # Use psm 8 for single word
+
+                        # Display the detected license plate number next to the box
+                        cv2.putText(detected, plate_text.strip(), (real_px1, real_py1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
         self.current_image = detected
         self.show_image(detected)
 

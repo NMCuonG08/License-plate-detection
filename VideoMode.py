@@ -6,7 +6,11 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QImage, QPixmap
 import cv2
 from datetime import timedelta
-
+import torch
+from PIL import Image
+import numpy as np
+import easyocr
+import re
 
 class VideoModeApp(QMainWindow):
     def __init__(self):
@@ -24,6 +28,14 @@ class VideoModeApp(QMainWindow):
         self.detection_mode = False
         self.detected_plates = []
         self.was_playing = False
+
+        # Tải model chỉ khi cần thiết để tránh lag lúc khởi động
+        self.models_loaded = False
+        self.plate_detector = None
+
+        # Thêm biến để tối ưu hiệu suất
+        self.skip_frames = 5  # Chỉ xử lý 1 frame sau mỗi 5 frame
+        self.frame_count = 0
 
         self.initUI()
 
@@ -217,7 +229,7 @@ class VideoModeApp(QMainWindow):
 
         # Status bar
         self.status_layout = QHBoxLayout()
-        self.status_label = QLabel("Trạng thái: Sẵn sàng")
+        self.status_label = QLabel(self.status_label_text if hasattr(self, 'status_label_text') else "Trạng thái: Sẵn sàng")
         self.status_label.setFont(QFont('Segoe UI', 9))
         self.status_layout.addWidget(self.status_label)
 
@@ -258,6 +270,25 @@ class VideoModeApp(QMainWindow):
                 border-radius: 8px;
             }
         """)
+
+    def load_models(self):
+        if self.models_loaded:
+            return True
+
+        try:
+            from ultralytics import YOLO
+            import easyocr
+
+            self.plate_detector = YOLO('license_plate_detector.pt')
+            self.reader = easyocr.Reader(['en'])  # Initialize for English characters
+
+            self.models_loaded = True
+            self.status_label.setText("Trạng thái: Model đã được tải")
+            return True
+        except Exception as e:
+            print(f"Error loading models: {str(e)}")
+            self.status_label.setText("Trạng thái: Lỗi khi tải model")
+            return False
 
     def open_video(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Mở Video", "",
@@ -431,6 +462,14 @@ class VideoModeApp(QMainWindow):
         self.detection_mode = not self.detection_mode
 
         if self.detection_mode:
+            # Tải model khi bật chế độ nhận diện
+            if not hasattr(self, 'models_loaded') or not self.models_loaded:
+                success = self.load_models()
+                if not success:
+                    self.detection_mode = False
+                    QMessageBox.critical(self, "Lỗi", "Không thể tải model nhận diện. Vui lòng kiểm tra cài đặt.")
+                    return
+
             self.detection_button.setText("🔍 Tắt nhận diện")
             self.detection_button.setStyleSheet("""
                 QPushButton {
@@ -471,49 +510,186 @@ class VideoModeApp(QMainWindow):
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
 
     def detect_license_plates(self, frame):
-        # This is a placeholder for actual license plate detection code
-        # In a real implementation, you would integrate your license plate detection algorithm here
+        # Increment frame counter
+        self.frame_count += 1
 
-        # Example of simple rectangle detection for demonstration
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(gray, 50, 150)
+        # Only process every few frames to improve performance
+        if self.frame_count % self.skip_frames != 0 and hasattr(self, 'last_detection_result'):
+            return self.last_detection_result
 
-        # Find contours
-        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        # Clone frame to avoid modifying original
+        result_frame = frame.copy()
 
-        # Filter for rectangles that could be license plates
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > 500:  # Minimum area threshold
-                peri = cv2.arcLength(contour, True)
-                approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+        if not hasattr(self, 'models_loaded') or not self.models_loaded:
+            cv2.putText(result_frame, "Model không được tải", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            self.last_detection_result = result_frame
+            return result_frame
 
-                # If the contour has 4 corners (rectangle)
-                if len(approx) == 4:
-                    x, y, w, h = cv2.boundingRect(contour)
-                    aspect_ratio = float(w) / h
+        try:
+            # Initialize EasyOCR if not already done
+            if not hasattr(self, 'reader'):
+                self.reader = easyocr.Reader(['en'])  # Initialize for English characters
 
-                    # License plates usually have aspect ratio between 2 and 5
-                    if 1.5 <= aspect_ratio <= 5:
-                        # Draw rectangle around the detected plate
-                        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            # Perform detection with YOLOv8
+            results = self.plate_detector(frame, conf=0.4)
 
-                        # Add text label
-                        cv2.putText(frame, "License Plate", (x, y - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            for result in results:
+                boxes = result.boxes.cpu().numpy()
+                for box in boxes:
+                    # Get license plate coordinates
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-                        # Extract the region of interest (license plate)
-                        plate_roi = gray[y:y + h, x:x + w]
+                    # Extract license plate region
+                    plate_roi = frame[y1:y2, x1:x2]
 
-                        # Store the detected plate if it's not already in the list
-                        plate_info = {'x': x, 'y': y, 'w': w, 'h': h, 'frame': self.current_frame}
-                        if not any(abs(plate['x'] - x) < 20 and abs(plate['y'] - y) < 20 for plate in
-                                   self.detected_plates):
-                            self.detected_plates.append(plate_info)
-                            self.results_label.setText(f"Đã nhận diện: {len(self.detected_plates)} biển số")
+                    if plate_roi.size == 0:
+                        continue
 
-        return frame
+                    # Preprocess image for better OCR
+                    # Convert to grayscale
+                    gray_plate = cv2.cvtColor(plate_roi, cv2.COLOR_BGR2GRAY)
+
+                    # Enhance contrast
+                    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                    enhanced = clahe.apply(gray_plate)
+
+                    # Apply bilateral filter to preserve edges while reducing noise
+                    filtered = cv2.bilateralFilter(enhanced, 11, 17, 17)
+
+                    # Apply adaptive thresholding
+                    binary = cv2.adaptiveThreshold(
+                        filtered, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                        cv2.THRESH_BINARY, 11, 2
+                    )
+
+                    # Resize image to better handle text recognition
+                    resized = cv2.resize(binary, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+
+                    # Use EasyOCR for text detection
+                    ocr_results = self.reader.readtext(resized)
+
+                    # Process OCR results
+                    if ocr_results:
+                        # Extract text from results
+                        plate_text = ''.join([result[1] for result in ocr_results])
+
+                        # Clean up text - remove non-alphanumeric characters
+                        plate_text = re.sub(r'[^A-Z0-9]', '', plate_text.upper())
+
+                        # If we have a reasonable-length text
+                        if len(plate_text) >= 4:
+                            # Draw rectangle around the license plate
+                            cv2.rectangle(result_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                            # Add background for text
+                            text_width = len(plate_text) * 15
+                            cv2.rectangle(result_frame, (x1, y1 - 30), (x1 + text_width, y1), (0, 255, 0), -1)
+
+                            # Display the recognized text
+                            cv2.putText(result_frame, plate_text, (x1 + 5, y1 - 10),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+                            # Store plate information if it's new
+                            plate_info = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1,
+                                          'frame': self.current_frame, 'text': plate_text}
+
+                            if not any(abs(plate['x'] - x1) < 20 and abs(plate['y'] - y1) < 20 for plate in
+                                       self.detected_plates):
+                                self.detected_plates.append(plate_info)
+                                self.results_label.setText(f"Đã nhận diện: {len(self.detected_plates)} biển số")
+                        else:
+                            # Draw red rectangle if text is invalid
+                            cv2.rectangle(result_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                    else:
+                        # Draw red rectangle if no text was detected
+                        cv2.rectangle(result_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+            # Save result for reuse on skipped frames
+            self.last_detection_result = result_frame
+
+        except Exception as e:
+            print(f"Error in license plate detection: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            cv2.putText(result_frame, "Lỗi nhận diện", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            self.last_detection_result = result_frame
+
+        return result_frame
+
+    def process_plate(self, frame, x1, y1, x2, y2):
+        """Process a detected license plate region"""
+        # Extract license plate ROI
+        plate_roi = frame[y1:y2, x1:x2]
+
+        if plate_roi.size == 0:
+            return
+
+        # Preprocess for better OCR
+        gray_plate = cv2.cvtColor(plate_roi, cv2.COLOR_BGR2GRAY)
+
+        # Apply adaptive thresholding
+        binary_plate = cv2.adaptiveThreshold(
+            gray_plate, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV, 11, 2
+        )
+
+        # Optional: Apply morphological operations to clean the image
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        binary_plate = cv2.morphologyEx(binary_plate, cv2.MORPH_CLOSE, kernel)
+        binary_plate = cv2.morphologyEx(binary_plate, cv2.MORPH_OPEN, kernel)
+
+        # Invert if needed (white text on black background)
+        if np.mean(binary_plate) > 127:
+            binary_plate = cv2.bitwise_not(binary_plate)
+
+        # Perform OCR on the plate
+        try:
+            plate_text = ""
+
+            # Use appropriate OCR engine
+            if hasattr(self, 'ocr_engine'):
+                if self.ocr_engine == "tesseract":
+                    # Using Tesseract OCR with specific config for license plates
+                    config = '--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+                    plate_text = self.reader.image_to_string(binary_plate, config=config)
+                    # Clean the text
+                    plate_text = ''.join(c for c in plate_text if c.isalnum())
+
+                elif self.ocr_engine == "easyocr":
+                    # Using EasyOCR
+                    results = self.reader.readtext(binary_plate)
+                    plate_text = ' '.join([result[1] for result in results])
+                    # Clean the text
+                    plate_text = ''.join(c for c in plate_text if c.isalnum())
+
+            # If we have valid text of reasonable length
+            if plate_text and 4 <= len(plate_text) <= 12:
+                # Draw rectangle around plate
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                # Show the text above the rectangle
+                cv2.putText(frame, plate_text, (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                # Store the detected plate if it's not already in the list
+                plate_info = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1,
+                              'frame': self.current_frame, 'text': plate_text}
+
+                # Check if this is a new detection
+                if not any(abs(plate['x'] - x1) < 20 and abs(plate['y'] - y1) < 20 for plate in self.detected_plates):
+                    self.detected_plates.append(plate_info)
+                    self.results_label.setText(f"Đã nhận diện: {len(self.detected_plates)} biển số")
+            else:
+                # Draw a different color rectangle if text is invalid
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 255), 2)
+                cv2.putText(frame, "Biển số không rõ", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+
+        except Exception as e:
+            print(f"OCR error: {str(e)}")
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
